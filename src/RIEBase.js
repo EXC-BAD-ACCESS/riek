@@ -1,97 +1,124 @@
 import React from 'react';
-import PropTypes from 'prop-types';
+import ReactDOM from 'react-dom';
+import RIEBase from './RIEBase';
 
-const debug = require('debug')('RIEBase');
+const debug = require('debug')('RIEStatefulBase');
 
-export default class RIEBase extends React.Component {
+export default class RIEStatefulBase extends RIEBase {
     constructor(props){
         super(props);
-
-        if (!this.props.propName) throw "RTFM: missing 'propName' prop";
-        if (!this.props.change) throw "RTFM: missing 'change' prop";
-        if (typeof this.props.value == 'undefined') throw "RTFM: missing 'value' prop";
-
-        this.state = {
-            editing: false,
-            loading: false,
-            disabled: false,
-            invalid: false
-        };
     }
 
-    static propTypes = {
-        value: PropTypes.any.isRequired,
-        change: PropTypes.func.isRequired,
-        propName: PropTypes.string.isRequired,
-        editProps: PropTypes.object,
-        defaultProps: PropTypes.object,
-        isDisabled: PropTypes.bool,
-        validate: PropTypes.func,
-        handleValidationFail: PropTypes.func,
-        shouldBlockWhileLoading: PropTypes.bool,
-        shouldRemainWhileInvalid: PropTypes.bool,
-        classLoading: PropTypes.string,
-        classEditing: PropTypes.string,
-        classDisabled: PropTypes.string,
-        classInvalid: PropTypes.string,
-        className: PropTypes.string,
-        beforeStart: PropTypes.func,
-        afterStart: PropTypes.func,
-        beforeFinish: PropTypes.func,
-        afterFinish: PropTypes.func,
+    startEditing = () => {
+        debug('startEditing')
+        this.props.beforeStart ? this.props.beforeStart() : null;
+        if(this.props.isDisabled) return;
+        this.setState({editing: true});
+        this.props.afterStart ? this.props.afterStart() : null;
     };
 
-    doValidations = (value) => {
-        debug(`doValidations(${value})`)
-        let isValid;
-        if(this.props.validate) {
-            isValid = this.props.validate(value);
-        } else if (this.validate) {
-            isValid = this.validate(value);
-        } else return true
-        this.setState({invalid: !isValid});
-        return isValid;
+    finishEditing = () => {
+        debug('finishEditing')
+        this.props.beforeFinish ? this.props.beforeFinish() : null;
+        let newValue = ReactDOM.findDOMNode(this.refs.input).value;
+        const result = this.doValidations(newValue);
+        if(result && this.props.value !== newValue) {
+            this.commit(newValue);
+        }
+        if(!result && this.props.handleValidationFail) {
+            this.props.handleValidationFail(result, newValue, () => this.cancelEditing());
+        } else {
+            this.cancelEditing();
+        }
+        this.props.afterFinish ? this.props.afterFinish() : null;
     };
 
-    selectInputText = (element) => {
-        debug(`selectInputText(${element.value})`)
-        if (element.setSelectionRange) element.setSelectionRange(0, element.value.length);
+    cancelEditing = () => {
+        debug('cancelEditing')
+        this.setState({editing: false, invalid: false});
+    };
+
+    keyDown = (event) => {
+        debug('keyDown(${event.keyCode})')
+        if(event.keyCode === 13) { this.finishEditing() }           // Enter
+        else if (event.keyCode === 27) { this.cancelEditing() }     // Escape
+    };
+
+    keyUp = () => {
+        debug('keyUp')
+        this.resizeInput(this.refs.input);
+    };
+
+    resizeInput = (input) => {
+        if (!input.startW) { input.startW = input.offsetWidth; }
+        const style = input.style;
+        style.width = 0;                        // recalculate from 0, in case characters are deleted
+        let desiredW = input.scrollWidth;
+        desiredW += input.offsetHeight;         // pad to reduce jerkyness when typing
+        style.width = Math.max(desiredW, input.startW) + 'px';
+    }
+
+    textChanged = (event) => {
+        debug('textChanged(${event.target.value})')
+        this.doValidations(event.target.value.trim());
+    };
+
+    componentDidUpdate = (prevProps, prevState) => {
+        debug(`componentDidUpdate(${prevProps}, ${prevState})`)
+        var inputElem = ReactDOM.findDOMNode(this.refs.input);
+        debug(inputElem)
+        if (this.state.editing && !prevState.editing) {
+            debug('entering edit mode')
+            inputElem.focus();
+            this.resizeInput(inputElem);
+            this.selectInputText(inputElem);
+        } else if (this.state.editing && prevProps.text != this.props.text) {
+            debug('not editing && text not equal previous props -- finishing editing')
+            this.finishEditing();
+        }
+    };
+
+    renderEditingComponent = () => {
+        debug('renderEditingComponent()')
+        return <input
+            disabled={this.state.loading}
+            className={this.makeClassString()}
+            defaultValue={this.props.value}
+            onInput={this.textChanged}
+            onBlur={this.elementBlur}
+            ref="input"
+            onKeyDown={this.keyDown}
+            onKeyUp={this.keyUp}
+            {...this.props.editProps} />;
+    };
+
+    renderNormalComponent = () => {
+        debug('renderNormalComponent')
+        return <span
+            tabIndex="0"
+            className={this.makeClassString()}
+            onFocus={this.startEditing}
+            onClick={this.startEditing}
+            {...this.props.defaultProps}>{this.state.newValue || this.props.value}</span>;
+    };
+
+    elementBlur = (event) => {
+        debug(`elementBlur(${event})`)
+        this.finishEditing();
     };
 
     elementClick = (event) => {
-        throw "RIEBase must be subclassed first: use a concrete class like RIEInput, RIEToggle et.c";
-    };
-
-    componentWillReceiveProps = (nextProps) => {
-        debug(`componentWillReceiveProps(${nextProps})`)
-        if ('value' in nextProps && !(nextProps.shouldRemainWhileInvalid && this.state.invalid)) {
-            this.setState({loading: false, editing: false, invalid: false, newValue: null});
-        }
-    };
-
-    commit = (value) => {
-        debug(`commit(${value})`)
-        if(!this.state.invalid) {
-            let newProp = {};
-            newProp[this.props.propName] = value;
-            this.setState({loading: true, newValue: value});
-            this.props.change(newProp);
-        }
-    };
-
-    makeClassString = () => {
-        debug(`makeClassString()`)
-        var classNames = [];
-        if (this.props.className) classNames.push(this.props.className);
-        if (this.state.editing && this.props.classEditing) classNames.push(this.props.classEditing);
-        if (this.state.loading && this.props.classLoading) classNames.push(this.props.classLoading);
-        if (this.state.disabled && this.props.classDisabled) classNames.push(this.props.classDisabled);
-        if (this.state.invalid && this.props.classInvalid) classNames.push(this.props.classInvalid);
-        return classNames.join(' ');
+        debug(`elementClick(${event})`)
+        this.startEditing();
+        event.target.element.focus();
     };
 
     render = () => {
-        debuf(`render()`)
-        return <span {...this.props.defaultProps} tabindex="0" className={this.makeClassString()} onClick={this.elementClick}>{this.props.value}</span>;
+        debug('render()')
+        if(this.state.editing) {
+            return this.renderEditingComponent();
+        } else {
+            return this.renderNormalComponent();
+        }
     };
 }
